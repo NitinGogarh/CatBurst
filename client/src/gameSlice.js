@@ -1,5 +1,6 @@
 import { createSlice } from "@reduxjs/toolkit";
 import axios from "axios";
+import toast from "react-hot-toast";
 
 const initialState = {
   username: "",
@@ -45,7 +46,7 @@ export const {
 export const startGame = (inputUsername) => async (dispatch) => {
   dispatch(setUsername(inputUsername));
   const response = await axios.post("http://localhost:8080/start-game", {
-    username : inputUsername,
+    username: inputUsername,
   });
   dispatch(setDeck(response.data.deck));
 };
@@ -55,6 +56,11 @@ export const drawCard = (username) => async (dispatch) => {
     username,
   });
   dispatch(setCardDrawn(response.data.card));
+  if (response.data.message.includes("You lose!")) {
+    dispatch(setUsername(""));
+    toast.error("You lose the game");
+    dispatch(setCardDrawn(null));
+  }
 };
 
 export const fetchLeaderboard = () => async (dispatch) => {

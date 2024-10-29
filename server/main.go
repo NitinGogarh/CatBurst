@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"math/rand"
 	"time"
+	"strconv"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -180,6 +181,7 @@ func drawCard(c *gin.Context) {
 	}
 
 	if len(deck) == 0 {
+		initializeDeck(user.Username);
 		log.Printf("No cards left in the deck for user: %s", user.Username)
 		c.JSON(http.StatusBadRequest, gin.H{"message": "No cards left in the deck"})
 		return
@@ -221,18 +223,50 @@ func handleDrawnCard(c *gin.Context, drawnCard string, username string) {
 
 	switch cardType {
 	case "Exploding Kitten":
-		log.Printf("User %s drew an Exploding Kitten!", username)
+		// Check if the user has a defuse card
+		hasDefuse, err := rdb.HGet(ctx, "user:"+username, "defuse").Result()
+		if err != nil {
+			log.Printf("Error retrieving defuse status for user %s: %v", username, err)
+		}
+
+		log.Printf("Can defuse : " , hasDefuse)
+
+		defuseCount, _ := strconv.Atoi(hasDefuse)
+		
+		if defuseCount > 0 {  // If user has defuse card
+			log.Printf("User %s used a Defuse card to defuse the Exploding Kitten!", username)
+			
+			// Set the defuse status to false in Redis
+			rdb.HSet(ctx, "user:"+username, "defuse" , 0)
+	
+			// Send a response back to the user confirming they defused the bomb
+			c.JSON(http.StatusOK, gin.H{"message": "You defused the Exploding Kitten using your Defuse card!", "card": emoji})
+			return
+		}
+	
+		log.Printf("User %s drew an Exploding Kitten without a Defuse card!", username)
 		c.JSON(http.StatusOK, gin.H{"message": "You drew an Exploding Kitten! You lose!", "card": emoji})
 		// Optional: Reset the game or end it
-		resetGame(username)
-		return
+		_, errr := rdb.Del(ctx, "deck:"+username).Result()
+    if errr != nil {
+        log.Printf("Error deleting deck for user %s: %v", username, err)
+    }
 
+    _, err = rdb.Del(ctx, "user:"+username).Result()
+    if err != nil {
+        log.Printf("Error deleting user data for user %s: %v", username, err)
+    }
+	rdb.HSet(ctx, "defuse:"+username, "false")
+		return
+	
 	case "Defuse":
 		log.Printf("User %s drew a Defuse card", username)
 		c.JSON(http.StatusOK, gin.H{"message": "You drew a Defuse card! Keep this to defuse an Exploding Kitten.", "card": emoji})
+		
 		// Save defuse card status in Redis for future use
 		rdb.HSet(ctx, "user:"+username, "defuse", 1)
 		return
+	
 
 	case "Shuffle":
 		log.Printf("User %s drew a Shuffle card", username)
@@ -242,32 +276,41 @@ func handleDrawnCard(c *gin.Context, drawnCard string, username string) {
 
 	default:
 		log.Printf("User %s drew a Cat card", username)
-		
-		// Remove the Cat card from the deck in Redis
-		_, err := rdb.LRem(ctx, "deck:"+username, 1, cardType).Result()
-		if err != nil {
-			log.Printf("Error removing Cat card for user %s: %v", username, err)
-			c.JSON(http.StatusInternalServerError, gin.H{"message": "Error removing Cat card from deck"})
-			return
-		}
 	
-		c.JSON(http.StatusOK, gin.H{"message": "You drew a Cat card! The card has been removed from your deck.", "card": emoji})
-		return	
+		// Log successful removal of the cat card
+		c.JSON(http.StatusOK, gin.H{
+			"message": "You drew a Cat card! One Cat card has been removed from your deck.",
+			"card":    emoji,
+		})
+		return		
 	}
 }
 
 func resetGame(username string) {
 	log.Printf("Resetting game for user: %s", username)
-	// Example reset logic: Refill the deck and save to Redis
-	deck := []string{"Cat", "Cat", "Defuse", "Shuffle", "Exploding Kitten"}
+
+	// Initialize deck
+	deck := []string{"Cat", "Cat", "Defuse", "Shuffle", "Exploding Kitten",}
+
+	// Shuffle the deck
+	rand.Seed(time.Now().UnixNano()) // Ensure randomness on each run
+	rand.Shuffle(len(deck), func(i, j int) {
+		deck[i], deck[j] = deck[j], deck[i]
+	})
+
+	// Select the first 5 cards from the shuffled deck
+	randomCards := deck[:5]
+
+	// Create deck key for the user
 	deckKey := "deck:" + username
 
-	// Clear the previous deck
+	// Clear the previous deck in Redis
 	rdb.Del(ctx, deckKey)
 
-	// Refill the deck
-	rdb.RPush(ctx, deckKey, deck)
-	log.Printf("Game reset for user: %s", username)
+	// Add the random cards to the deck in Redis
+	rdb.RPush(ctx, deckKey, randomCards)
+
+	log.Printf("Game reset for user: %s with cards: %v", username, randomCards)
 }
 
 // Leaderboard route
