@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"time"
 	"strconv"
+	"sync"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -35,10 +36,9 @@ type User struct {
 
 var rdb *redis.Client
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		// Allow all origins (be cautious with this in production)
-		return true
-	},
+    ReadBufferSize:  1024,
+    WriteBufferSize: 1024,
+    CheckOrigin:     func(r *http.Request) bool { return true }, // Allow all origins
 }
 
 func main() {
@@ -65,7 +65,6 @@ func main() {
 	// Routes
 	router.POST("/start-game", startGame)
 	router.POST("/draw-card", drawCard)
-	router.GET("/leaderboard", getLeaderboard)
 
 	// WebSocket for real-time updates
 	router.GET("/ws", serveWs)
@@ -153,6 +152,9 @@ func startGame(c *gin.Context) {
 		return
 	}
 
+	rdb.HSet(ctx, "win", user.Username, 0);
+	rdb.HSet(ctx, "lose", user.Username, 0);
+
 	log.Printf("Game started for user: %s", user.Username)
 	c.JSON(http.StatusOK, gin.H{
 		"message":  "Game started",
@@ -181,11 +183,12 @@ func drawCard(c *gin.Context) {
 	}
 
 	if len(deck) == 0 {
-		initializeDeck(user.Username);
+		updateUserStats(user.Username , true);
+
 		log.Printf("No cards left in the deck for user: %s", user.Username)
 		c.JSON(http.StatusBadRequest, gin.H{"message": "No cards left in the deck"})
 		return
-	}
+	}	
 
 	// Randomly select a card index
 	rand.Seed(time.Now().UnixNano())
@@ -204,6 +207,76 @@ func drawCard(c *gin.Context) {
 
 	// Call the function to handle the drawn card
 	handleDrawnCard(c, drawnCard, user.Username)
+}
+
+func updateUserStats(username string, isWin bool) {
+    // Initialize winCount and loseCount
+    var winCount, loseCount int
+
+    if isWin {
+        // Retrieve the current win count for the user
+        winStr, err := rdb.HGet(ctx, "win", username).Result()
+        if err != nil {
+            if err == redis.Nil {
+                winCount = 0 // No wins recorded yet
+            } else {
+                log.Printf("Error retrieving win count for user %s: %v", username, err)
+                return // Exit on error
+            }
+        } else {
+            winCount, err = strconv.Atoi(winStr)
+            if err != nil {
+                log.Printf("Error converting win count to integer for user %s: %v", username, err)
+                winCount = 0 // Default to 0 on conversion error
+            }
+        }
+
+        // Increment the win count by 1 for the current match
+        newWinCount := winCount + 1
+
+		log.Printf("Count Username : %s" , username)
+		log.Printf("Previous : " , winCount , "Now : " , newWinCount)
+        if err := rdb.HSet(ctx, "win", username, newWinCount).Err(); err != nil {
+            log.Printf("Error updating win count for user %s: %v", username, err)
+            return // Exit on error
+        }
+        log.Printf("User %s has now won %d times", username, newWinCount)
+
+    } else {
+        // Fetch the current lose count for the user
+    loseStr, err := rdb.HGet(ctx, "lose", username).Result()
+    log.Printf("Loadstr for user %s: %s", username, loseStr)
+
+    if err != nil {
+        if err == redis.Nil {
+            log.Printf("User %s not found in 'lose' hash.", username)
+            loseCount = 0 // User not found, default to 0
+        } else {
+            log.Printf("Error retrieving lose count for user %s: %v", username, err)
+            return // Exit on error
+        }
+    } else {
+        // Successfully retrieved loseStr, convert to int
+        loseCount, err = strconv.Atoi(loseStr)
+        if err != nil {
+            log.Printf("Error converting lose count to integer for user %s: %v", username, err)
+            loseCount = 0 // Default to 0 on conversion error
+        }
+    }
+
+    // Increment the lose count by 1 for the current match
+    newLoseCount := loseCount + 1 // Increment the count
+    log.Printf("Count for Username %s: %d", username, loseCount)
+    log.Printf("Previous : %d Now : %d", loseCount, newLoseCount)
+
+    // Update the lose count in Redis
+    if err := rdb.HSet(ctx, "lose", username, newLoseCount).Err(); err != nil {
+        log.Printf("Error updating lose count for user %s: %v", username, err)
+        return // Exit on error
+    }
+    log.Printf("User %s has now lost %d times", username, newLoseCount)
+
+    }
 }
 
 func handleDrawnCard(c *gin.Context, drawnCard string, username string) {
@@ -229,7 +302,7 @@ func handleDrawnCard(c *gin.Context, drawnCard string, username string) {
 			log.Printf("Error retrieving defuse status for user %s: %v", username, err)
 		}
 
-		log.Printf("Can defuse : " , hasDefuse)
+		log.Printf("Can defuse : %t" , hasDefuse)
 
 		defuseCount, _ := strconv.Atoi(hasDefuse)
 		
@@ -246,16 +319,8 @@ func handleDrawnCard(c *gin.Context, drawnCard string, username string) {
 	
 		log.Printf("User %s drew an Exploding Kitten without a Defuse card!", username)
 		c.JSON(http.StatusOK, gin.H{"message": "You drew an Exploding Kitten! You lose!", "card": emoji})
-		// Optional: Reset the game or end it
-		_, errr := rdb.Del(ctx, "deck:"+username).Result()
-    if errr != nil {
-        log.Printf("Error deleting deck for user %s: %v", username, err)
-    }
 
-    _, err = rdb.Del(ctx, "user:"+username).Result()
-    if err != nil {
-        log.Printf("Error deleting user data for user %s: %v", username, err)
-    }
+		updateUserStats(username , false)
 	rdb.HSet(ctx, "defuse:"+username, "false")
 		return
 	
@@ -309,76 +374,129 @@ func resetGame(username string) {
 
 	// Add the random cards to the deck in Redis
 	rdb.RPush(ctx, deckKey, randomCards)
+	rdb.HSet(ctx, "user:"+username, "defuse" , 0)
 
 	log.Printf("Game reset for user: %s with cards: %v", username, randomCards)
 }
 
-// Leaderboard route
-func getLeaderboard(c *gin.Context) {
-	log.Println("Fetching leaderboard")
-	// Fetch sorted leaderboard from Redis
-	// Example: Fetch users with most wins
-	c.JSON(http.StatusOK, gin.H{"leaderboard": "Top players"})
-}
+// Active WebSocket connections
+var clients = make(map[*websocket.Conn]bool)
+var mutex = &sync.Mutex{} // Lock to synchronize access to clients map
 
-// WebSocket handler for real-time updates
+// Serve WebSocket connection for leaderboard
 func serveWs(c *gin.Context) {
-	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
-	if err != nil {
-		log.Println("WebSocket upgrade failed:", err)
-		return
-	}
-	defer conn.Close()
+    conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+    if err != nil {
+        log.Println("WebSocket upgrade failed:", err)
+        return
+    }
 
-	log.Println("WebSocket connection established")
+    // Register new connection
+    mutex.Lock()
+    clients[conn] = true
+    mutex.Unlock()
+    defer func() {
+        mutex.Lock()
+        delete(clients, conn)
+        mutex.Unlock()
+        conn.Close()
+    }()
 
-	// Fetch all user details from Redis
-	usersData, err := fetchAllUsers()
-	if err != nil {
-		log.Println("Error fetching users data from Redis:", err)
-		return
-	}
+    log.Println("WebSocket connection established")
 
-	// Send users data to the WebSocket
-	err = conn.WriteJSON(usersData)
-	if err != nil {
-		log.Println("Error sending users data through WebSocket:", err)
-		return
-	}
+    // Send initial leaderboard data to the new connection
+    if err := sendLeaderboard(conn); err != nil {
+        log.Println("Error sending initial leaderboard data:", err)
+        return
+    }
 
-	// Keep WebSocket connection alive for further communication
-	for {
-		_, _, err := conn.ReadMessage()
-		if err != nil {
-			log.Println("WebSocket connection closed:", err)
-			break
-		}
-	}
+    // Ping periodically to keep the connection alive
+    go func() {
+        ticker := time.NewTicker(30 * time.Second) // Ping every 30 seconds
+        defer ticker.Stop()
+        for {
+            <-ticker.C
+            if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+                log.Println("Ping failed:", err)
+                return
+            }
+        }
+    }()
+
+    // Keep connection alive
+    for {
+        if _, _, err := conn.ReadMessage(); err != nil {
+            log.Println("WebSocket connection closed:", err)
+            break
+        }
+    }
 }
+
+// Broadcast updated leaderboard to all clients
+func broadcastLeaderboard() {
+    // Fetch updated leaderboard data
+    leaderboardData, err := fetchAllUserStats()
+    if err != nil {
+        log.Println("Error fetching leaderboard data:", err)
+        return
+    }
+
+    // Send updated leaderboard to each connected client
+    mutex.Lock()
+    for conn := range clients {
+        if err := conn.WriteJSON(leaderboardData); err != nil {
+            log.Println("Error sending leaderboard to a client:", err)
+            conn.Close()
+            delete(clients, conn) // Remove client on error
+        }
+    }
+    mutex.Unlock()
+}
+
+// Helper function to send leaderboard data to a single connection
+func sendLeaderboard(conn *websocket.Conn) error {
+    leaderboardData, err := fetchAllUserStats()
+    if err != nil {
+        return err
+    }
+    return conn.WriteJSON(leaderboardData)
+}
+
 
 // Helper function to fetch all users' data from Redis
-func fetchAllUsers() ([]map[string]string, error) {
-	// Example Redis key pattern for users, assuming the keys are in the format "user:<username>"
-	userKeys, err := rdb.Keys(ctx, "user:*").Result()
+func fetchAllUserStats() ([]map[string]string, error) {
+	// Fetch all user win data
+	winData, err := rdb.HGetAll(ctx, "win").Result()
 	if err != nil {
-		log.Printf("Error fetching user keys: %v", err)
+		log.Printf("Error fetching win data: %v", err)
 		return nil, err
 	}
 
-	var usersData []map[string]string
-
-	for _, key := range userKeys {
-		// Fetch the user details from Redis
-		userData, err := rdb.HGetAll(ctx, key).Result()
-		if err != nil {
-			log.Printf("Error fetching data for key %s: %v", key, err)
-			continue
-		}
-
-		// Append the user data to the list
-		usersData = append(usersData, userData)
+	// Fetch all user lose data
+	loseData, err := rdb.HGetAll(ctx, "lose").Result()
+	if err != nil {
+		log.Printf("Error fetching lose data: %v", err)
+		return nil, err
 	}
 
-	log.Println("Fetched user data:", usersData)
-	return usersData, nil
+	// Combine win and lose data into a single slice of maps
+	var userStats []map[string]string
+	for username, wins := range winData {
+		// Find corresponding lose count, default to "0" if not found
+		loses, ok := loseData[username]
+		if !ok {
+			loses = "0"
+		}
+
+		// Add each user’s stats to the list
+		stats := map[string]string{
+			"username": username,
+			"win":      wins,
+			"lose":     loses,
+		}
+		userStats = append(userStats, stats)
+	}
+
+	log.Println("Fetched user stats:", userStats)
+	return userStats, nil
 }

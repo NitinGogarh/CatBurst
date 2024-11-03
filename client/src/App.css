@@ -37,12 +37,27 @@
   cursor: pointer;
 }
 
+.draw-card {
+  padding: 10px 20px;
+  font-size: 1rem;
+  background-color: #28a745;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.draw-card:hover{
+  background-color: #39864b;
+}
+
 .start-btn:hover {
   background-color: #218838;
 }
 
 .game-container {
   margin-top: 20px;
+  user-select: none;
 }
 
 .welcome-message {

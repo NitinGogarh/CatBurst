@@ -9,6 +9,7 @@ const initialState = {
   gameOver: false,
   wins: 0,
   leaderboard: [],
+  canDraw: true,
 };
 
 export const gameSlice = createSlice({
@@ -30,6 +31,9 @@ export const gameSlice = createSlice({
     setLeaderboard: (state, action) => {
       state.leaderboard = action.payload;
     },
+    setcanDraw: (state, action) => {
+      state.canDraw = action.payload;
+    },
   },
 });
 
@@ -39,16 +43,22 @@ export const {
   setCardDrawn,
   setGameOver,
   setLeaderboard,
+  setcanDraw,
 } = gameSlice.actions;
 
 // Async actions for interacting with the backend API
 
 export const startGame = (inputUsername) => async (dispatch) => {
   dispatch(setUsername(inputUsername));
+  dispatch(setcanDraw(true));
   const response = await axios.post("http://localhost:8080/start-game", {
     username: inputUsername,
   });
   dispatch(setDeck(response.data.deck));
+};
+
+export const lboard = (payload) => async(dispatch)=> {
+  dispatch(setLeaderboard(payload));
 };
 
 export const drawCard = (username) => async (dispatch) => {
@@ -57,15 +67,13 @@ export const drawCard = (username) => async (dispatch) => {
   });
   dispatch(setCardDrawn(response.data.card));
   if (response.data.message.includes("You lose!")) {
-    dispatch(setUsername(""));
     toast.error("You lose the game");
-    dispatch(setCardDrawn(null));
+    dispatch(setcanDraw(false));
+    setTimeout(() => {
+      dispatch(setUsername(""));
+      dispatch(setCardDrawn(null));
+    }, 2000);
   }
-};
-
-export const fetchLeaderboard = () => async (dispatch) => {
-  const response = await axios.get("http://localhost:8080/leaderboard");
-  dispatch(setLeaderboard(response.data.leaderboard));
 };
 
 export default gameSlice.reducer;

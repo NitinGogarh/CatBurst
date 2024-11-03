@@ -1,17 +1,12 @@
 import React, { useEffect, useState } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import toast, { Toaster } from "react-hot-toast";
-import {
-  startGame,
-  drawCard,
-  fetchLeaderboard,
-  setLeaderboard,
-} from "./gameSlice";
+import { startGame, drawCard, lboard } from "./gameSlice";
 import "./App.css"; // Add your custom CSS styles here
 
 function App() {
   const dispatch = useDispatch();
-  const { username, cardDrawn, leaderboard } = useSelector(
+  const { username, cardDrawn, leaderboard, canDraw } = useSelector(
     (state) => state.game
   );
 
@@ -32,22 +27,39 @@ function App() {
     }
   };
 
-  const loadLeaderboard = () => {
-    dispatch(fetchLeaderboard());
-  };
-
   useEffect(() => {
-    const ws = new WebSocket("ws://localhost:8080/ws");
+    let ws;
 
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      console.log("Message : ", data);
-      // if (data.leaderboard) {
-      // dispatch(setLeaderboard(data.leaderboard));
-      // }
+    const connect = () => {
+      ws = new WebSocket("ws://localhost:8080/ws");
+
+      ws.onopen = () => {
+        console.log("WebSocket connected");
+      };
+
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        console.log("Message:", data);
+        if (data) {
+          dispatch(lboard(data)); // Dispatch leaderboard data to Redux store
+        }
+      };
+
+      ws.onerror = (error) => {
+        console.error("WebSocket error:", error);
+      };
+
+      ws.onclose = (event) => {
+        console.log("WebSocket closed, reconnecting...", event);
+        setTimeout(connect, 3000); // Attempt to reconnect after 3 seconds
+      };
     };
 
-    return () => ws.close();
+    connect();
+
+    return () => {
+      if (ws) ws.close();
+    };
   }, [dispatch]);
 
   return (
@@ -77,7 +89,7 @@ function App() {
             <h2 className="welcome-message">Welcome, {username}!</h2>
             <div className="cards">
               {/* Card Deck */}
-              <div className="deck-container" onClick={handleDrawCard}>
+              <div className="deck-container">
                 <div className={`card ${cardFlipped ? "flipped" : ""}`}>
                   {/* Display back of the card or card drawn */}
                   {!cardDrawn ? (
@@ -91,6 +103,11 @@ function App() {
 
             {/* Game Status */}
             <div className="game-status">
+              {canDraw && (
+                <button className="draw-card" onClick={handleDrawCard}>
+                  Draw Card
+                </button>
+              )}
               {cardDrawn && (
                 <p className="status-text">Card drawn: {cardDrawn}</p>
               )}
@@ -99,18 +116,18 @@ function App() {
         )}
 
         {/* Leaderboard */}
-        {/* <div className="leaderboard-container">
-        <h2>Leaderboard</h2>
-        <ul className="leaderboard">
-          {leaderboard &&
-            leaderboard.length > 0 &&
-            leaderboard.map((player, index) => (
-              <li key={index} className="leaderboard-item">
-                {player.username}: {player.wins} wins
-              </li>
-            ))}
-        </ul>
-      </div> */}
+        <div className="leaderboard-container">
+          <h2>Leaderboard</h2>
+          <ul className="leaderboard">
+            {leaderboard &&
+              leaderboard.length > 0 &&
+              leaderboard.map((player, index) => (
+                <li key={index} className="leaderboard-item">
+                  {player.username}: {player.win} wins , {player.lose} lose
+                </li>
+              ))}
+          </ul>
+        </div>
       </div>
     </>
   );
