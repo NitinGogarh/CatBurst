@@ -72,6 +72,7 @@ export const drawCard = (username) => async (dispatch) => {
     setTimeout(() => {
       dispatch(setUsername(""));
       dispatch(setCardDrawn(null));
+      window.location.reload();
     }, 2000);
   }
 };
